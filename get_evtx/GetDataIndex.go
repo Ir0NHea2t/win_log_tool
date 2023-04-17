@@ -3,15 +3,17 @@ package get_evtx
 import (
 	"fmt"
 	"github.com/0xrawsec/golang-evtx/evtx"
+	"golang.org/x/sys/windows/registry"
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
 
-func GetEvtx() ([]map[string]string, []map[string]string, []map[string]string, []map[string]string, string, string, string) {
+func GetEvtx() ([]map[string]string, []map[string]string, []map[string]string, []map[string]string, string, string, string, string, string, string) {
 	windowsEvtxFile := "C:\\Windows\\System32\\winevt\\Logs\\Security.evtx"
 	var offset int64
 	offset = 0
@@ -206,18 +208,71 @@ func GetEvtx() ([]map[string]string, []map[string]string, []map[string]string, [
 	}
 
 	//netstat -ano
-	portInfo := GetNetstatInfo("netstat -ano")
+	portInfo := GetCmdResult("netstat -ano")
 	//fmt.Println(portInfo)
-	tasklistInfo := GetNetstatInfo("tasklist")
+	tasklistInfo := GetCmdResult("tasklist")
 	//fmt.Println(tasklistInfo)
-	wmicInfo := GetNetstatInfo("wmic process get name,executablepath,processid")
+	wmicInfo := GetCmdResult("wmic process get name,executablepath,processid")
 	//fmt.Println(wmicInfo)
+	//定时任务
+	schtasksInfo := GetCmdResult("schtasks")
+	//用户信息
+	var userInfoResult string
+	userInfocmd := GetCmdResult("net user")
+	userInfoResult = userInfoResult + userInfocmd + "\n"
+	RegeditUsersNamesPath := "HKEY_LOCAL_MACHINE\\SAM\\SAM\\Domains\\Account\\Users\\Names"
+	userinfoRegedit := GetRegeditResult(RegeditUsersNamesPath)
+	if userinfoRegedit == "" {
+		userInfoResult = userInfoResult + "HKEY_LOCAL_MACHINE\\SAM\\SAM\\Domains\\Account\\Users\\Names 注册表未开启" + "\n"
+	}
+	regeditUserInfo := GetRegeditUser()
+	userInfoResult = userInfoResult + "\n" + regeditUserInfo
+	//获取自启动信息
+	StartUpInfo := GetStartupResult()
+	fmt.Println(StartUpInfo)
 
-	return loginSuccessMapSlice, loginFailMapSlice, usersOperateMapSlice, clearHistoryMapSlice, portInfo, tasklistInfo, wmicInfo
+	return loginSuccessMapSlice, loginFailMapSlice, usersOperateMapSlice, clearHistoryMapSlice, portInfo, tasklistInfo, wmicInfo, schtasksInfo, StartUpInfo, userInfoResult
 
 }
 
-func GetNetstatInfo(cmdline string) string {
+func GetRegeditUser() string {
+	var RegeditUser string
+	// 打开注册表项
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList`, registry.QUERY_VALUE|registry.ENUMERATE_SUB_KEYS)
+	if err != nil {
+		fmt.Printf("无法打开注册表项：%v\n", err)
+		return RegeditUser
+	}
+	defer k.Close()
+
+	// 获取所有子项的名称
+	subkeyNames, err := k.ReadSubKeyNames(-1)
+	if err != nil {
+		fmt.Printf("无法获取子项名称：%v\n", err)
+		return RegeditUser
+	}
+
+	// 遍历每个子项，获取 ProfileImagePath 的值
+	for _, name := range subkeyNames {
+		subkey, err := registry.OpenKey(k, name, registry.QUERY_VALUE)
+		if err != nil {
+			fmt.Printf("无法打开子项：%v\n", err)
+			continue
+		}
+		defer subkey.Close()
+
+		profileImagePath, _, err := subkey.GetStringValue("ProfileImagePath")
+		if err != nil {
+			fmt.Printf("无法获取 ProfileImagePath 值：%v\n", err)
+			continue
+		}
+		fmt.Printf("%s -> %s\n", name, profileImagePath)
+		RegeditUser = RegeditUser + name + " -> " + profileImagePath + "\n"
+	}
+	return RegeditUser
+}
+
+func GetCmdResult(cmdline string) string {
 	cmdslice := strings.Split(cmdline, " ")
 	var cmd *exec.Cmd
 
@@ -236,4 +291,53 @@ func GetNetstatInfo(cmdline string) string {
 	output, _ := simplifiedchinese.GB18030.NewDecoder().String(string(out))
 
 	return output
+}
+
+func GetRegeditResult(cmdline string) string {
+	var RegeditResult string
+	key, err := registry.OpenKey(registry.CURRENT_USER, cmdline, registry.QUERY_VALUE)
+	if err != nil {
+		// 处理错误
+	}
+	defer key.Close()
+
+	// 获取所有的值名称
+	valueNames, err := key.ReadValueNames(0)
+	if err != nil {
+		// 处理错误
+	}
+
+	// 遍历所有的值名称，获取启动项名称和程序路径
+	for _, valueName := range valueNames {
+		value, _, err := key.GetStringValue(valueName)
+		if err != nil {
+			// 处理错误
+		}
+
+		RegeditResult = RegeditResult + valueName + value + "\n"
+	}
+	return RegeditResult
+
+}
+
+func GetStartupResult() string {
+
+	var StartUp string
+	// 获取 Windows 自启动目录
+	startupDir := filepath.Join(os.Getenv("APPDATA"), "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
+
+	// 遍历自启动目录中的文件
+	StartUp = "Windows 自启动目录：" + "\n"
+	filepath.Walk(startupDir, func(path string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			StartUp = StartUp + info.Name() + "\n"
+		}
+		return nil
+	})
+
+	// 获取注册表中的启动项
+	StartUp = StartUp + "注册表启动项：" + "\n"
+	result := GetRegeditResult("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run")
+	StartUp = StartUp + result
+	return StartUp
 }

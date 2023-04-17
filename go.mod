@@ -10,4 +10,5 @@ require (
 require (
 	github.com/0xrawsec/golang-utils v1.3.0 // indirect
 	github.com/tealeg/xlsx v1.0.5 // indirect
+	golang.org/x/sys v0.7.0 // indirect
 )
